@@ -1,0 +1,154 @@
+---
+- name: Setup Ubuntu Server for Kubernetes
+  hosts: hosts
+  become: yes
+
+  tasks:
+    - name: Set hostname to master
+      hostname:
+        name: master
+
+    - name: Configure IP address and netplan
+      copy:
+        content: |
+          network:
+            version: 2
+            renderer: networkd
+            ethernets:
+              enp0s3:
+                addresses:
+                  - 192.168.0.173/24
+                nameservers:
+                  addresses: [8.8.8.8, 8.8.4.4]
+                routes:
+                  - to: default
+                    via: 192.168.0.1
+        dest: /etc/netplan/00-installer-config.yaml
+
+    - name: Deactivate swap
+      mount:
+        name: swap
+        fstype: swap
+        state: absent
+      ignore_errors: yes
+      when: ansible_swaptotal_mb > 0
+
+    - name: Ensure /etc/resolv.conf has nameserver 8.8.8.8
+      copy:
+        content: "nameserver 8.8.8.8"
+        dest: /etc/resolv.conf
+
+    - name: Create containerd modules file
+      copy:
+        content: |
+          overlay
+          br_netfilter
+        dest: /etc/modules-load.d/containerd.conf
+
+    - name: Load kernel modules
+      modprobe:
+        name: "{{ item }}"
+      loop:
+        - overlay
+        - br_netfilter
+
+    - name: Configure sysctl settings for Kubernetes
+      copy:
+        content: |
+          net.bridge.bridge-nf-call-ip6tables = 1
+          net.bridge.bridge-nf-call-iptables = 1
+        dest: /etc/sysctl.d/99-kubernetes-cri.conf
+
+    - name: Apply sysctl settings
+      command: sysctl --system
+
+    - name: Install containerd
+      apt:
+        name:
+          - containerd
+        state: present
+
+
+    - name: Ensure /etc/containerd directory exists
+      file:
+        path: /etc/containerd
+        state: directory
+
+
+
+    - name: Create containerd configuration file
+      copy:
+        content: "{{ lookup('file', 'files/containerd_config.toml') }}"
+        dest: /etc/containerd/config.toml
+
+    - name: Restart containerd
+      systemd:
+        name: containerd
+        state: restarted
+
+    - name: Disable swap permanently (update /etc/fstab)
+      mount:
+        name: swap
+        fstype: swap
+        state: absent
+        persist: yes
+      ignore_errors: yes
+      when: ansible_swaptotal_mb > 0
+
+
+    - name: Add host entry to /etc/hosts
+      lineinfile:
+        path: /etc/hosts
+        line: "{{ ansible_host }} master"
+  #########################################################
+          #- name: Update APT cache
+          #apt:
+          #update_cache: yes
+
+
+    - name: Import Kubernetes APT GPG key
+      shell: |
+        sudo curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-archive-keyring.gpg   
+      args:
+        creates: /etc/apt/keyrings/kubernetes-archive-keyring.gpg
+  
+    - name: Install required packages (apt-transport-https, ca-certificates, curl)
+      #bemoce: true
+      apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+        state: present     
+
+    - name: Create Kubernetes APT repository file
+      copy:
+        content: "deb [signed-by=/etc/apt/keyrings/kubernetes-archive-keyring.gpg] https://apt.kubernetes.io/ kubernetes-xenial main"
+        dest: /etc/apt/sources.list.d/kubernetes.list
+
+
+    - name: Update APT cache again
+      apt:
+        update_cache: yes
+
+    - name: Display available Kubernetes versions
+      command: apt-cache madison kubeadm
+      register: kubeadm_version
+
+    - name: Install Kubernetes packages (kubelet, kubeadm, kubectl, cri-tools)
+      apt:
+        name:
+          - kubelet
+          - kubeadm
+          - kubectl
+          - cri-tools
+        state: present
+
+    - name: Mark Kubernetes packages as held
+      apt:
+        state: present
+        package: "{{ item }}"
+      loop:
+        - kubelet
+        - kubeadm
+        - kubectl
