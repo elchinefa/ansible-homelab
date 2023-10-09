@@ -5,11 +5,8 @@
 
   tasks:
     - name: Set hostname   
-      #ansible.builtin.debug:         
-      #var: hostvars[inventory_hostname]|json_query('[character_type,spell1]')
       hostname:
-        #var: hostvars[inventory_hostname]|json_query('[character_type,spell1]')
-        name: "{{ hostvars[inventory_hostname]|json_query('[character_type,spell1][1]') }}"
+        name: "{{ inventory_hostname }}"
 
     - name: Configure IP address and netplan
       copy:
