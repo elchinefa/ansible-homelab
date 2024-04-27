@@ -17,31 +17,60 @@
             ethernets:
               ens18:
                 addresses:
-                  - {{ item }}/24
+                  - {{ hostvars[item].ansible_host }}/24  # Use the ansible_host variable
                 nameservers:
                   addresses: [8.8.8.8, 8.8.4.4]
                 routes:
                   - to: default
-                    via: 192.168.8.2
+                    via: 192.168.8.1
         dest: /etc/netplan/00-installer-config.yaml
-      with_items:
-        - 192.168.8.234
-        - 192.168.8.235
-      #when: "'{{ inventory_hostname }}' in groups['node1']" # If in nentory file we have groups then we ad it here     
+      delegate_to: "{{ item }}"  
+      with_items: "{{ groups['hosts'] }}" 
+        #- 192.168.8.240
+        #- 192.168.8.239
+       ##when: "'{{ inventory_hostname }}' in groups['node1']" # If in nentory file we have groups then we ad it here     
+    
+    - name: Set ip_forward to 1
+      sysctl:
+        name: net.ipv4.ip_forward
+        value: 1
+        state: present
+    
+     # Machine-id must be removed in order to prevent vms to get same ip
+    - name: Remove contents of /etc/machine-id
+      command: echo -n > /etc/machine-id
 
-    - name: Debug ansible_swaptotal_mb
-      debug:
-        var: ansible_swaptotal_mb
+    - name: Remove /var/lib/dbus/machine-id
+      file:
+        path: /var/lib/dbus/machine-id
+        state: absent
+
+    - name: Create symbolic link
+      file:
+        src: /etc/machine-id
+        dest: /var/lib/dbus/machine-id
+        state: link
 
 
 
-    - name: Deactivate swap
+    - name: Unmount swap file
       mount:
-        name: swap
-        fstype: swap
+        path: /swap.img
         state: absent
       ignore_errors: yes
       when: ansible_swaptotal_mb > 0
+
+    - name: Remove swap entry from /etc/fstab
+      lineinfile:
+        path: /etc/fstab
+        state: absent
+        regexp: '^/swap.img.*swap.*'
+      ignore_errors: yes
+      when: ansible_swaptotal_mb > 0
+
+    - name: Disable swap with swapoff
+      command: swapoff -a
+      become: true
 
 
     - name: Ensure /etc/resolv.conf has nameserver 8.8.8.8
@@ -69,6 +98,18 @@
           net.bridge.bridge-nf-call-ip6tables = 1
           net.bridge.bridge-nf-call-iptables = 1
         dest: /etc/sysctl.d/99-kubernetes-cri.conf
+
+    - name: Import Kubernetes APT GPG key
+      shell: |
+        sudo curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.28/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg  
+      args:
+        creates: /etc/apt/keyrings/kubernetes-apt-keyring.gpg 
+  
+    - name: Create Kubernetes APT repository file
+      copy:
+        content: "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.28/deb/ /"
+        dest: /etc/apt/sources.list.d/kubernetes.list
+
 
     - name: Apply sysctl settings
       command: sysctl --system
@@ -102,12 +143,12 @@
         name: containerd
         state: restarted
 
+
     - name: Disable swap permanently (update /etc/fstab)
-      mount:
-        name: swap
-        fstype: swap
+      lineinfile:
+        path: /etc/fstab
         state: absent
-        persist: yes
+        regexp: '^UUID=\S+\s+\S+\s+swap.img\s+'
       ignore_errors: yes
       when: ansible_swaptotal_mb > 0
 
@@ -122,14 +163,13 @@
           #update_cache: yes
 
 
-    - name: Import Kubernetes APT GPG key
-      shell: |
-        sudo curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-archive-keyring.gpg   
-      args:
-        creates: /etc/apt/keyrings/kubernetes-archive-keyring.gpg
+    #- name: Import Kubernetes APT GPG key
+    #  shell: |
+    #    sudo curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.28/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg  
+    #  args:
+     #   creates: /etc/apt/keyrings/kubernetes-apt-keyring.gpg 
   
     - name: Install required packages (apt-transport-https, ca-certificates, curl)
-      #bemoce: true
       apt:
         name:
           - apt-transport-https
@@ -137,16 +177,17 @@
           - curl
         state: present     
 
-    - name: Create Kubernetes APT repository file
-      copy:
-        content: "deb [signed-by=/etc/apt/keyrings/kubernetes-archive-keyring.gpg] https://apt.kubernetes.io/ kubernetes-xenial main"
-        dest: /etc/apt/sources.list.d/kubernetes.list
+    #- name: Create Kubernetes APT repository file
+    #  copy:
+    #    content: "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.28/deb/ /"
+    #    dest: /etc/apt/sources.list.d/kubernetes.list
 
 
     - name: Update APT cache again
       apt:
         update_cache: yes
-
+      when: ansible_os_family == 'Debian'
+      
     - name: Display available Kubernetes versions
       command: apt-cache madison kubeadm
       register: kubeadm_version
