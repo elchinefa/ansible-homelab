@@ -1,4 +1,7 @@
 [hosts]
-master ansible_host=192.168.8.238
-worker1 ansible_host=192.168.8.239
+master ansible_host=192.168.8.234
+worker1 ansible_host=192.168.8.236
 
+[second_int]
+master second_ip=10.244.0.1
+worker1 second_ip=10.244.0.2

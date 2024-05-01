@@ -18,6 +18,7 @@
               ens18:
                 addresses:
                   - {{ hostvars[item].ansible_host }}/24  # Use the ansible_host variable
+                  - {{ hostvars[item].second_ip }}/16  # Use the ansible_host variable
                 nameservers:
                   addresses: [8.8.8.8, 8.8.4.4]
                 routes:
