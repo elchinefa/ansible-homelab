@@ -102,13 +102,13 @@
 
     - name: Import Kubernetes APT GPG key
       shell: |
-        sudo curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.28/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg  
+        sudo curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.29/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg  
       args:
         creates: /etc/apt/keyrings/kubernetes-apt-keyring.gpg 
   
     - name: Create Kubernetes APT repository file
       copy:
-        content: "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.28/deb/ /"
+        content: "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.29/deb/ /"
         dest: /etc/apt/sources.list.d/kubernetes.list
 
 
@@ -210,3 +210,68 @@
         - kubelet
         - kubeadm
         - kubectl
+
+    # Tesing
+# New tasks for Kubernetes setup
+- name: Initialize Kubernetes master and setup cluster
+  hosts: master
+  become: yes
+  tasks:
+    - name: Stop kubelet service
+      service:
+        name: kubelet
+        state: stopped
+
+    - name: Reset kubeadm
+      command: kubeadm reset -f
+
+    - name: Clean up etcd data directory
+      file:
+        path: /var/lib/etcd
+        state: absent
+        force: yes
+
+    - name: Clean up Kubernetes manifests directory
+      file:
+        path: /etc/kubernetes/manifests
+        state: absent
+        force: yes
+    - name: Initialize Kubernetes master
+      command: kubeadm init --pod-network-cidr=10.244.0.0/16
+      register: kubeadm_init
+
+    - name: Create .kube directory for the user
+      file:
+        path: /home/el10/.kube
+        state: directory
+        mode: '0755'
+      become: yes
+      become_user: "el10"
+
+    - name: Copy kube admin config to user's kube config
+      command: cp /etc/kubernetes/admin.conf /home/el10/.kube/config
+      become: yes
+
+    - name: Change ownership of kube config
+      file:
+        path: /home/el10/.kube/config
+        owner: "el10"
+        group: "el10"
+        mode: '0644'
+      become: yes
+
+    - name: Apply Calico network plugin
+      command: kubectl apply -f https://docs.projectcalico.org/manifests/calico.yaml
+      environment:
+        KUBECONFIG: /home/el10/.kube/config
+
+    - name: Get kubeadm join command
+      command: kubeadm token create --print-join-command
+      register: kubeadm_join_command
+
+- name: Join Kubernetes worker nodes to the cluster
+  hosts: worker1
+  become: yes
+  tasks:
+    - name: Join Kubernetes cluster
+      command: "{{ hostvars['master']['kubeadm_join_command'].stdout }}"    
